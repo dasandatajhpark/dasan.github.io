@@ -1,0 +1,83 @@
+cat << 'EOF' > get_logs.sh
+#!/bin/bash
+
+# =======================================================
+# 서버/워크스테이션 무상점검 로그 추출 스크립트 (범용 호환 버전)
+# =======================================================
+
+if [ "$EUID" -ne 0 ]; then
+  echo "[-] 관리자 권한(root)이 필요합니다. 'sudo bash $0' 형태로 실행해주세요."
+  exit 1
+fi
+
+HOSTNAME=$(hostname)
+DATE=$(date +%Y%m%d_%H%M)
+OUTPUT_FILE="dasan_inspection_${HOSTNAME}_${DATE}.txt"
+
+echo "=======================================================" > $OUTPUT_FILE
+echo " [ 무상점검 시스템 로그 추출 ]" >> $OUTPUT_FILE
+echo " - 추출 일시: $(date)" >> $OUTPUT_FILE
+echo " - 호스트명 : $HOSTNAME" >> $OUTPUT_FILE
+echo " - OS 정보  : $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"' || uname -r)" >> $OUTPUT_FILE
+echo "=======================================================" >> $OUTPUT_FILE
+
+function print_section() {
+    echo -e "\n\n=======================================================" >> $OUTPUT_FILE
+    echo " $1 " >> $OUTPUT_FILE
+    echo "=======================================================" >> $OUTPUT_FILE
+}
+
+echo "[+] 로그 추출을 시작합니다... (예상 소요시간: 5초)"
+
+# 1. 하드웨어 시리얼
+print_section "[ 시스템 하드웨어 정보 (dmidecode) ]"
+if command -v dmidecode &> /dev/null; then
+    dmidecode -t system | egrep -i 'manufacturer|product|serial' >> $OUTPUT_FILE
+else
+    echo "dmidecode 명령어가 없습니다. (패키지 설치 필요)" >> $OUTPUT_FILE
+fi
+
+# 2. 리소스 상태
+print_section "[ 시스템 메모리 상태 (free -h) ]"
+free -h >> $OUTPUT_FILE
+
+# 3. 디스크 상태
+print_section "[ 디스크 물리적 구성 및 마운트 (lsblk) ]"
+lsblk >> $OUTPUT_FILE
+
+print_section "[ 파일시스템 및 용량 상태 (df -Th) ]"
+df -Th >> $OUTPUT_FILE
+
+print_section "[ 부팅 마운트 설정 (/etc/fstab) ]"
+cat /etc/fstab >> $OUTPUT_FILE
+
+# 4. GPU 상태
+print_section "[ GPU 구동 상태 (nvidia-smi) ]"
+if command -v nvidia-smi &> /dev/null; then
+    nvidia-smi >> $OUTPUT_FILE
+else
+    echo "nvidia-smi 명령어를 찾을 수 없거나 GPU가 장착되지 않았습니다." >> $OUTPUT_FILE
+fi
+
+# 5. 커널 로그
+print_section "[ 주요 커널 하드웨어 로그 (dmesg -T) ]"
+dmesg -T 2>/dev/null | tail -n 1000 >> $OUTPUT_FILE || dmesg | tail -n 1000 >> $OUTPUT_FILE
+
+# 6. 시스템 에러 로그 (구형/신형 OS 자동 분기)
+print_section "[ 시스템 주요 에러 로그 ]"
+if command -v journalctl &> /dev/null; then
+    journalctl -b -p 3 -n 100 --no-pager >> $OUTPUT_FILE
+elif [ -f /var/log/messages ]; then
+    echo "(journalctl 없음 - /var/log/messages 추출)" >> $OUTPUT_FILE
+    tail -n 500 /var/log/messages | egrep -i 'error|fail|warn|critical' >> $OUTPUT_FILE
+elif [ -f /var/log/syslog ]; then
+    echo "(journalctl 없음 - /var/log/syslog 추출)" >> $OUTPUT_FILE
+    tail -n 500 /var/log/syslog | egrep -i 'error|fail|warn|critical' >> $OUTPUT_FILE
+else
+    echo "시스템 에러 로그 파일을 찾을 수 없습니다." >> $OUTPUT_FILE
+fi
+
+echo "[+] 범용 추출 완료! 생성된 파일: $OUTPUT_FILE"
+EOF
+
+chmod +x get_logs.sh
